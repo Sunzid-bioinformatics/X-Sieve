@@ -6,4 +6,4 @@ scikit-learn==1.6.1
 lightgbm==4.6.0
 xgboost==2.1.4
 pillow==11.3.0
-rdkit==2025.3.3  # Updated to conda-forge version
+rdkit-pypi==2022.9.5
