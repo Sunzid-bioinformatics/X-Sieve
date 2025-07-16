@@ -2,10 +2,13 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import joblib
-from rdkit import Chem
-from rdkit.Chem import AllChem, Draw, Descriptors, Lipinski
-from PIL import Image
 import os
+from PIL import Image
+from io import BytesIO
+from rdkit import Chem
+from rdkit.Chem import AllChem, Descriptors, Lipinski
+from rdkit.Chem import rdDepictor
+from rdkit.Chem.Draw import rdMolDraw2D
 from sklearn.preprocessing import StandardScaler
 
 # Configure page
@@ -59,8 +62,7 @@ def load_resources():
         "scaler": None,
         "feature_indices": None
     }
-    
-    # Load feature indices with validation
+
     try:
         if os.path.exists("selected_feature_indices.npy"):
             feature_indices = np.load("selected_feature_indices.npy")
@@ -73,17 +75,16 @@ def load_resources():
             st.sidebar.error("✗ Feature indices file not found")
     except Exception as e:
         st.sidebar.error(f"Error loading feature indices: {str(e)}")
-    
-    # Load models (removed Logistic Regression, Naive Bayes, and MLP)
+
     model_files = {
         "Random Forest": "RF.pkl",
-        "SVM": "SVM.pkl", 
+        "SVM": "SVM.pkl",
         "KNN": "KNN.pkl",
         "XGBoost": "XGBoost.pkl",
         "LightGBM": "LightGBM.pkl",
         "Extra Trees": "ET.pkl"
     }
-    
+
     for name, file in model_files.items():
         try:
             if os.path.exists(file):
@@ -93,49 +94,49 @@ def load_resources():
                 st.sidebar.error(f"✗ {name}: File not found")
         except Exception as e:
             st.sidebar.error(f"✗ {name} failed to load: {str(e)}")
-    
-    # Load scaler if exists (kept in case other models need it)
+
     try:
         if os.path.exists("scaler.pkl"):
             resources["scaler"] = joblib.load("scaler.pkl")
             st.sidebar.success("✓ Scaler loaded")
     except Exception as e:
         st.sidebar.error(f"Error loading scaler: {str(e)}")
-    
+
     return resources
 
 # Sidebar
 with st.sidebar:
     st.header("System Status")
     resources = load_resources()
-    
+
     st.markdown("---")
     st.header("Developers")
-    st.markdown("""
-    Sheikh Sunzid Ahmed  
-    M. Oliur Rahman
-    """)
-    
+    st.markdown("Sheikh Sunzid Ahmed  \nM. Oliur Rahman")
+
     st.markdown("---")
     st.header("Instructions")
     st.markdown("""
-    1. Enter SMILES or upload CSV
-    2. View predictions and properties
+    1. Enter SMILES or upload CSV  
+    2. View predictions and properties  
     3. Download results
     """)
 
-# Helper functions
+# Draw molecule safely using rdMolDraw2D
+def mol_to_image(mol, size=(400, 300)):
+    rdDepictor.Compute2DCoords(mol)
+    drawer = rdMolDraw2D.MolDraw2DCairo(size[0], size[1])
+    drawer.DrawMolecule(mol)
+    drawer.FinishDrawing()
+    png = drawer.GetDrawingText()
+    return Image.open(BytesIO(png))
+
+# Feature extraction
 def smiles_to_features(smiles, feature_indices=None):
-    """Convert SMILES to features using Morgan fingerprints and apply feature selection"""
     mol = Chem.MolFromSmiles(smiles)
     if not mol:
         return None
-    
-    # Generate 2048-bit fingerprint
     fp = AllChem.GetMorganFingerprintAsBitVect(mol, 2, nBits=2048)
     features = np.array(fp)
-    
-    # Apply feature selection if indices are provided
     if feature_indices is not None:
         try:
             features = features[feature_indices]
@@ -145,14 +146,13 @@ def smiles_to_features(smiles, feature_indices=None):
         except IndexError as e:
             st.error(f"Feature selection error: {str(e)}")
             return None
-    
     return features
 
+# Molecular properties
 def calculate_properties(smiles):
     mol = Chem.MolFromSmiles(smiles)
     if not mol:
         return None
-    
     return {
         "MW": Descriptors.MolWt(mol),
         "LogP": Descriptors.MolLogP(mol),
@@ -168,28 +168,27 @@ def calculate_properties(smiles):
         ])
     }
 
-# Main app
+# Main App
 tab1, tab2 = st.tabs(["Single Molecule", "Batch Processing"])
 
+# --- SINGLE MOLECULE ---
 with tab1:
     st.header("Single Molecule Analysis")
     smiles = st.text_input("Enter SMILES string:", "CN1C=NC2=C1C(=O)N(C(=O)N2C)C")
-    
+
     if st.button("Analyze"):
         if not smiles:
             st.warning("Please enter a SMILES string")
             st.stop()
-            
+
         mol = Chem.MolFromSmiles(smiles)
         if not mol:
             st.error("Invalid SMILES string")
             st.stop()
-            
-        # Display molecule
-        img = Draw.MolToImage(mol, size=(400, 300))
+
+        img = mol_to_image(mol)
         st.image(img, caption="Molecular Structure")
-        
-        # Calculate properties
+
         props = calculate_properties(smiles)
         if props:
             st.subheader("Molecular Properties")
@@ -203,45 +202,31 @@ with tab1:
                 <b>TPSA:</b> {props['TPSA']:.2f}
             </div>
             """, unsafe_allow_html=True)
-            
-            # Lipinski evaluation
+
             if props["Lipinski_Violations"] == 0:
                 st.success("✅ Zero Lipinski violations (good drug-like properties)")
             else:
                 st.warning(f"⚠️ {props['Lipinski_Violations']} Lipinski violation(s)")
-        
-        # Make predictions
+
         features = smiles_to_features(smiles, resources["feature_indices"])
-        if features is None:
-            st.error("Could not generate valid features for this molecule")
+        if features is None or resources["feature_indices"] is None:
+            st.error("Could not generate features for this molecule or feature selector missing.")
             st.stop()
-            
+
         st.subheader("Model Predictions")
-        
-        if resources["feature_indices"] is None:
-            st.error("Feature selection not available - cannot make predictions")
-            st.stop()
-            
+
         for name, model in resources["models"].items():
             try:
-                # Prepare features
                 X = features.reshape(1, -1)
-                
-                # Make prediction
-                if hasattr(model, "predict_proba"):
-                    proba = model.predict_proba(X)[0][1]
-                else:
-                    proba = float(model.predict(X)[0])
-                
+                proba = model.predict_proba(X)[0][1] if hasattr(model, "predict_proba") else float(model.predict(X)[0])
                 pred = "Active" if proba >= 0.5 else "Inactive"
-                
+
                 st.markdown(f"""
                 <div class="model-card">
                     <b>{name}:</b> <span style='color:{"green" if pred == "Active" else "red"}'>{pred}</span>
                     <br>Probability: {proba:.4f}
                 </div>
                 """, unsafe_allow_html=True)
-                
             except Exception as e:
                 st.markdown(f"""
                 <div class="error-card">
@@ -250,107 +235,80 @@ with tab1:
                 </div>
                 """, unsafe_allow_html=True)
 
+# --- BATCH PROCESSING ---
 with tab2:
     st.header("Batch Processing")
     uploaded_file = st.file_uploader("Upload CSV file with SMILES column", type=["csv"])
-    
+
     if uploaded_file:
         df = pd.read_csv(uploaded_file)
         if "SMILES" not in df.columns:
             st.error("CSV must contain a 'SMILES' column")
             st.stop()
-            
+
         if resources["feature_indices"] is None:
             st.error("Cannot process batch - feature selection not available")
             st.stop()
-            
+
         results = []
         invalid_smiles = []
         error_molecules = []
-        
+
         with st.spinner("Processing molecules..."):
             progress_bar = st.progress(0)
-            
             for i, smi in enumerate(df["SMILES"]):
                 try:
                     mol = Chem.MolFromSmiles(smi)
                     if not mol:
-                        invalid_smiles.append(i+2)  # +2 for header and 1-based index
+                        invalid_smiles.append(i + 2)
                         continue
-                        
-                    # Calculate properties
+
                     props = calculate_properties(smi)
                     if not props:
-                        error_molecules.append((i+2, "Property calculation failed"))
+                        error_molecules.append((i + 2, "Property calculation failed"))
                         continue
-                        
-                    # Generate features
+
                     features = smiles_to_features(smi, resources["feature_indices"])
                     if features is None:
-                        error_molecules.append((i+2, "Feature generation failed"))
+                        error_molecules.append((i + 2, "Feature generation failed"))
                         continue
-                        
-                    # Make predictions
+
                     preds = {"SMILES": smi}
-                    
                     for name, model in resources["models"].items():
                         try:
                             X = features.reshape(1, -1)
-                            
-                            if hasattr(model, "predict_proba"):
-                                proba = model.predict_proba(X)[0][1]
-                            else:
-                                proba = float(model.predict(X)[0])
-                                
+                            proba = model.predict_proba(X)[0][1] if hasattr(model, "predict_proba") else float(model.predict(X)[0])
                             preds[f"{name}_Pred"] = "Active" if proba >= 0.5 else "Inactive"
                             preds[f"{name}_Prob"] = proba
                         except Exception as e:
                             preds[f"{name}_Pred"] = "Error"
                             preds[f"{name}_Prob"] = np.nan
-                            error_molecules.append((i+2, f"{name} prediction error: {str(e)}"))
-                    
-                    # Add properties
-                    preds.update({
-                        "MW": props["MW"],
-                        "LogP": props["LogP"],
-                        "HBA": props["HBA"],
-                        "HBD": props["HBD"],
-                        "RotBonds": props["RotBonds"],
-                        "TPSA": props["TPSA"],
-                        "Lipinski_Violations": props["Lipinski_Violations"]
-                    })
-                    
+                            error_molecules.append((i + 2, f"{name} prediction error: {str(e)}"))
+
+                    preds.update(props)
                     results.append(preds)
                 except Exception as e:
-                    error_molecules.append((i+2, f"General processing error: {str(e)}"))
-                
-                progress_bar.progress((i+1)/len(df))
-        
-        # Show results
+                    error_molecules.append((i + 2, f"General error: {str(e)}"))
+                progress_bar.progress((i + 1) / len(df))
+
         if results:
             results_df = pd.DataFrame(results)
             st.success(f"Processed {len(results)} valid molecules")
             st.dataframe(results_df)
-            
-            # Download button
-            csv = results_df.to_csv(index=False).encode('utf-8')
-            st.download_button(
-                "Download Results",
-                csv,
-                "x-sieve_results.csv",
-                "text/csv"
-            )
-        
+
+            csv = results_df.to_csv(index=False).encode("utf-8")
+            st.download_button("Download Results", csv, "x-sieve_results.csv", "text/csv")
+
         if invalid_smiles:
             st.warning(f"Skipped {len(invalid_smiles)} invalid SMILES (rows: {', '.join(map(str, invalid_smiles))})")
-        
+
         if error_molecules:
             st.warning(f"Encountered {len(error_molecules)} processing errors")
             if st.checkbox("Show error details"):
                 for row, error in error_molecules:
                     st.write(f"Row {row}: {error}")
 
-# Footer with institution name
+# Footer
 st.markdown("""
     <div style="text-align: center; color: #2e7d32; margin-top: 2rem;">
         Department of Botany, University of Dhaka
