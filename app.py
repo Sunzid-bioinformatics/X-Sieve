@@ -1,8 +1,3 @@
-import sys
-import subprocess
-# Install system dependencies for RDKit
-subprocess.run(["apt-get", "update"], stdout=sys.stdout, stderr=sys.stderr)
-subprocess.run(["apt-get", "install", "-y", "libxrender1", "libxext6"], stdout=sys.stdout, stderr=sys.stderr)
 import streamlit as st
 import pandas as pd
 import numpy as np
