@@ -1,3 +1,6 @@
+<p align="center">
+  <img src="logo_main.png" alt="X-Sieve Logo" width="300"/>
+</p>
 
 
 🧪 X-Sieve: XIAP Screening and Inhibitor Evaluation Engine
